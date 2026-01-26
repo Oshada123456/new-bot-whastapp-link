@@ -1,65 +1,59 @@
-const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
+const { Client, RemoteAuth } = require('whatsapp-web.js');
+const { MongoStore } = require('wwebjs-mongo');
+const mongoose = require('mongoose');
 const qrcode = require('qrcode-terminal');
+const express = require('express');
 const axios = require('axios');
-const fs = require('fs');
-const path = require('path');
 
-const client = new Client({
-    authStrategy: new LocalAuth(),
-    puppeteer: {
-        headless: true,
-        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
-        executablePath: '/usr/bin/chromium'
-    }
-});
+const app = express();
+const port = process.env.PORT || 3000;
 
-client.on('qr', (qr) => {
-    qrcode.generate(qr, { small: true });
-    console.log('QR එක Scan කරන්න (Koyeb Logs වල බලන්න)');
-});
+// Render එක Sleep වීම වැළැක්වීමට (Self-Ping)
+app.get('/', (req, res) => res.send('Bot is Running!'));
+app.listen(port, () => console.log(`Server listening on port ${port}`));
 
-client.on('ready', () => {
-    console.log('Bot එක සාර්ථකව වැඩ!');
-});
+// පසුව Repo 2 (Downloader) එකේ URL එක මෙතනට දාන්න ඕනේ
+const DOWNLOADER_URL = "https://your-downloader-repo-2.onrender.com/download";
 
-client.on('message', async (msg) => {
-    // උදාහරණයක් ලෙස: .dl [URL] ලෙස message එක එවන්න
-    if (msg.body.startsWith('.dl ')) {
-        const url = msg.body.split(' ')[1];
-        const fileName = `movie_${Date.now()}.mp4`;
-        const filePath = path.join(__dirname, fileName);
+const MONGO_URI = process.env.MONGO_URI; // අපි මේක Render එකේදී ලබා දෙමු
 
-        try {
-            await msg.reply('Downloading... කරුණාකර රැඳී සිටින්න.');
-
-            // File එක Stream කරලා download කිරීම (RAM ඉතිරි කරගන්න)
-            const response = await axios({
-                method: 'get',
-                url: url,
-                responseType: 'stream'
-            });
-
-            const writer = fs.createWriteStream(filePath);
-            response.data.pipe(writer);
-
-            writer.on('finish', async () => {
-                try {
-                    const media = MessageMedia.fromFilePath(filePath);
-                    await client.sendMessage(msg.from, media, { sendMediaAsDocument: true });
-                    await msg.reply('සාර්ථකව එවන ලදී!');
-                } catch (err) {
-                    msg.reply('Error: File එක යැවීමේදී ගැටලුවක් මතු විය.');
-                } finally {
-                    // File එක යැව්වාට පසු අනිවාර්යයෙන් මැකීම
-                    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-                }
-            });
-
-        } catch (error) {
-            msg.reply('Error: URL එක වැරදියි හෝ download කරගත නොහැක.');
-            if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+mongoose.connect(MONGO_URI).then(() => {
+    const store = new MongoStore({ mongoose: mongoose });
+    const client = new Client({
+        authStrategy: new RemoteAuth({
+            store: store,
+            backupSyncIntervalMs: 300000
+        }),
+        puppeteer: {
+            args: ['--no-sandbox', '--disable-setuid-sandbox']
         }
-    }
-});
+    });
 
-client.initialize();
+    client.on('qr', (qr) => {
+        console.log('QR Code received, scan it in logs:');
+        qrcode.generate(qr, {small: true});
+    });
+
+    client.on('ready', () => console.log('WhatsApp Bot is ready!'));
+
+    client.on('message', async (msg) => {
+        // TikTok/FB Link එකක්දැයි බැලීම
+        if (msg.body.includes('tiktok.com') || msg.body.includes('facebook.com')) {
+            msg.reply('වීඩියෝ එක සකසමින් පවතියි, මොහොතක් රැඳී සිටින්න...');
+            
+            try {
+                // Repo 2 (Downloader) එකට Request එක යැවීම
+                const response = await axios.get(`${DOWNLOADER_URL}?url=${encodeURIComponent(msg.body)}`);
+                if (response.data.video_url) {
+                    // වීඩියෝ එක ලැබුණාම User ට යැවීම
+                    // (මෙතැනදී MediaMessage පාවිච්චි කරන්න පුළුවන්)
+                    msg.reply(`මෙන්න ඔයාගේ වීඩියෝ එක: ${response.data.video_url}`);
+                }
+            } catch (error) {
+                msg.reply('කණගාටුයි, වීඩියෝ එක ලබා ගැනීමට නොහැකි වුණා.');
+            }
+        }
+    });
+
+    client.initialize();
+});
